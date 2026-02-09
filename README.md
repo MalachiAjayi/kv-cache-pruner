@@ -26,76 +26,73 @@
   - `kv_cache_pruner/utils.py`
   - Cache factory (`load_kv_cache`).
 
-  ## Environment Setup
+   ## Environment Setup
 
-  ```bash
-  conda create -n kv-cache-pruner python=3.12
   conda activate kv-cache-pruner
-
   pip install transformers==4.47.0
   pip install flash-attn==2.7.3 --no-build-isolation
-  pip install torch numpy tqdm datasets rouge-score fuzzywuzzy python-Levenshtein
 
   ## Quick Inference Example
 
   import torch
   from kv_cache_pruner.monkey_patch import enable_kv_cache_pruning
-  from kv_cache_pruner.utils import load_model_and_tokenizer, load_kv_cache
 
-  model.eval().to("cuda" if torch.cuda.is_available() else "cpu")
+  model, tokenizer = load_model_and_tokenizer(model_name, precision="bf16")
+
   enable_kv_cache_pruning(model)
 
-  past_key_values = load_kv_cache(
+      method="kvcV",
       num_recent=16,
-      decode_evict=True
+      num_heavy=48,
+      decode_evict=True,
   )
 
   prompt = "Summarize the main benefits of cache pruning in one sentence."
   inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
 
-  generated_ids = model.generate(
-      inputs.input_ids,
       attention_mask=inputs.attention_mask,
       past_key_values=past_key_values,
       max_new_tokens=64,
-      do_sample=False
+      do_sample=False,
   )
 
-  print(output)
+  output = tokenizer.decode(
+      generated_ids[0][inputs.input_ids.shape[1]:],
+      skip_special_tokens=True
 
   For a full runnable script, see example_generate.py.
-
   ## Available Cache Methods
 
   Use load_kv_cache(method=...) with one of:
+
   - full
-  - h2o
+  - tova
   - snapkv
+  - snapkv_avgpool
   - kvcV, kvcK, kvcVK
   - kvcV+tova, kvcK+tova, kvcVK+tova
   - kvcV+maxpool, kvcK+maxpool, kvcVK+maxpool
+  - kvcV+avgpool, kvcK+avgpool, kvcVK+avgpool
   - kvcV_fullhist, kvcK_fullhist, kvcVK_fullhist
   - kvcVK_no_cross and corresponding +tova, +maxpool, +avgpool, _fullhist variants
 
 
   - num_heavy
-  - recent_ratio
   - heavy_ratio
   - decode_evict
+  - fix_recent_token
 
   ## Evaluation
-
   ### Needle-in-a-Haystack
+  bash scripts/eval_niah.sh
 
-  Input data expected in:
+  Input data is expected under:
 
   - evaluation/needle/data/
 
-  Predictions/results are written under the save directory configured in the script.
+  ### LongBench
 
   bash scripts/eval_longbench.sh
-
-  LongBench configs are under:
 
   - evaluation/longbench/config/
 
