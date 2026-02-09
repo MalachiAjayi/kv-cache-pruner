@@ -1,85 +1,119 @@
 # kv-cache-pruner
 
-`kv-cache-pruner` is a renamed, functionality-equivalent derivative of OBCache focused on one goal: **prune KV cache for long-context LLM inference efficiency**. 🧠
+  `kv-cache-pruner` is a toolkit for **KV cache pruning during long-context LLM inference**.
+  It integrates with Hugging Face Transformers attention modules and provides multiple eviction strategies to reduce
+  memory usage while preserving generation quality.
 
-It keeps the same core behavior:
-- KV cache eviction/pruning during generation
-- H2O/TOVA/SnapKV-style variants
-- evaluation pipelines for Needle-in-a-Haystack and LongBench 📊
+  - Loads causal LMs and tokenizers with configurable precision.
+  - Patches model attention modules so cache scoring/eviction runs during inference.
+  - Builds `past_key_values` objects for different pruning strategies.
+  - Supports prefill-only eviction or prefill+decode eviction.
+  - Evaluates quality on:
+  - Needle-in-a-Haystack passkey retrieval.
+  - LongBench tasks.
 
-## What Changed
+  ## Core Components
+  - `kv_cache_pruner/cache_utils.py`
+  - Cache classes and score tracking:
+  - `SinkCache`
+  - `KVScoreTracker`
+  - `kv_cache_pruner/monkey_patch/llama.py`
+  - Attention forward implementations with score updates and eviction hooks.
+  - `kv_cache_pruner/monkey_patch/utils.py`
+  - Model patching helpers:
+  - `enable_kv_cache_pruning_flashattn2`
+  - `enable_kv_cache_pruning_streamingattn`
+  - `kv_cache_pruner/utils.py`
+  - Cache factory (`load_kv_cache`).
 
-- Repo name: `OBCache` -> `kv-cache-pruner`
-- Code package: `obc/` -> `kv_cache_pruner/`
-- Main class naming:
-  - `OBCache` -> `KVCachePruner`
-  - `OBCScoreTracker` -> `KVScoreTracker`
-- Monkey patch naming:
-  - `enable_optimal_brain_kv` -> `enable_kv_cache_pruning`
-  - `enable_optimal_brain_kv_flashattn2` -> `enable_kv_cache_pruning_flashattn2`
-- Method tags renamed for clarity:
-  - `obcV/obcK/obcVK` -> `kvcV/kvcK/kvcVK`
-  - backward compatibility for old `obc*` tags is preserved in `load_kv_cache()`
+  ## Environment Setup
 
-## Environment Setup
+  ```bash
+  conda create -n kv-cache-pruner python=3.12
+  conda activate kv-cache-pruner
 
-```bash
-conda create -n kv-cache-pruner python=3.12
-conda activate kv-cache-pruner
+  pip install transformers==4.47.0
+  pip install flash-attn==2.7.3 --no-build-isolation
+  pip install torch numpy tqdm datasets rouge-score fuzzywuzzy python-Levenshtein
 
-pip install transformers==4.47.0
-pip install flash-attn==2.7.3 --no-build-isolation
-```
+  ## Quick Inference Example
 
-## Inference Example
+  import torch
+  from kv_cache_pruner.monkey_patch import enable_kv_cache_pruning
+  from kv_cache_pruner.utils import load_model_and_tokenizer, load_kv_cache
 
-```python
-from kv_cache_pruner.monkey_patch.utils import enable_kv_cache_pruning
-from kv_cache_pruner.utils import load_kv_cache, load_model_and_tokenizer
+  model.eval().to("cuda" if torch.cuda.is_available() else "cpu")
+  enable_kv_cache_pruning(model)
 
-model_name = "meta-llama/Llama-3.1-8B-Instruct"
-model, tokenizer = load_model_and_tokenizer(model_name)
-enable_kv_cache_pruning(model)
+  past_key_values = load_kv_cache(
+      num_recent=16,
+      decode_evict=True
+  )
 
-past_key_values = load_kv_cache(method="kvcV", num_recent=16, num_heavy=48)
-prompt = "YOUR PROMPT"
-model_inputs = tokenizer([prompt], return_tensors="pt")
-generated_ids = model.generate(
-    **model_inputs, max_new_tokens=512, past_key_values=past_key_values
-)
-generated_ids = [
-    output_ids[len(input_ids):]
-    for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-]
-response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-print(response)
-```
+  prompt = "Summarize the main benefits of cache pruning in one sentence."
+  inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
 
-For a full demo, see `example_generate.py`.
+  generated_ids = model.generate(
+      inputs.input_ids,
+      attention_mask=inputs.attention_mask,
+      past_key_values=past_key_values,
+      max_new_tokens=64,
+      do_sample=False
+  )
 
-## Evaluation
+  print(output)
 
-### Needle-In-A-Haystack
+  For a full runnable script, see example_generate.py.
 
-```bash
-bash scripts/eval_niah.sh
-```
+  ## Available Cache Methods
 
-### LongBench
+  Use load_kv_cache(method=...) with one of:
+  - full
+  - h2o
+  - snapkv
+  - kvcV, kvcK, kvcVK
+  - kvcV+tova, kvcK+tova, kvcVK+tova
+  - kvcV+maxpool, kvcK+maxpool, kvcVK+maxpool
+  - kvcV_fullhist, kvcK_fullhist, kvcVK_fullhist
+  - kvcVK_no_cross and corresponding +tova, +maxpool, +avgpool, _fullhist variants
 
-```bash
-bash scripts/eval_longbench.sh
-```
 
-## Notes
+  - num_heavy
+  - recent_ratio
+  - heavy_ratio
+  - decode_evict
 
-- Existing `obc*` method names still work for compatibility.
-- Existing `enable_optimal_brain_kv*` function names are kept as aliases.
+  ## Evaluation
 
-## License
+  ### Needle-in-a-Haystack
 
-MIT (`LICENSE.md`).
+  Input data expected in:
 
-## Credits
+  - evaluation/needle/data/
 
-Built and maintained by our team. 🚀
+  Predictions/results are written under the save directory configured in the script.
+
+  bash scripts/eval_longbench.sh
+
+  LongBench configs are under:
+
+  - evaluation/longbench/config/
+
+  ## Evaluation Entry Points
+
+  - evaluation/needle/pred.py
+  - evaluation/needle/eval.py
+  - evaluation/longbench/pred.py
+  - evaluation/longbench/eval.py
+
+  ## Typical Workflow
+
+  1. Load model and tokenizer.
+  2. Apply monkey patch (enable_kv_cache_pruning or flash-attn2 version).
+  3. Create cache object with load_kv_cache.
+  4. Run generation with past_key_values.
+  5. Reset cache between independent samples if needed.
+
+  ## License
+
+  MIT (LICENSE.md)
